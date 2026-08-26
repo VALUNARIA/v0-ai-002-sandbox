@@ -1,0 +1,71 @@
+name: VALUNARIA governed CI
+on:
+  workflow_dispatch:
+    inputs:
+      phase: {required: true, type: string}
+      subject_sha: {required: true, type: string}
+      task_spec_hash: {required: true, type: string}
+      candidate_commit_sha: {required: true, type: string}
+      integrated_commit_sha: {required: false, type: string}
+      execution_id: {required: true, type: string}
+      attempt_id: {required: true, type: string}
+      dispatch_nonce: {required: true, type: string}
+permissions:
+  contents: read
+jobs:
+  governed-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.subject_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install local test requirements
+        run: if test -f requirements-test.txt; then python -m pip install -r requirements-test.txt; fi
+      - name: Run governed checks and write evidence
+        env:
+          PHASE: ${{ inputs.phase }}
+          SUBJECT_SHA: ${{ inputs.subject_sha }}
+          TASK_SPEC_HASH: ${{ inputs.task_spec_hash }}
+          CANDIDATE_COMMIT_SHA: ${{ inputs.candidate_commit_sha }}
+          INTEGRATED_COMMIT_SHA: ${{ inputs.integrated_commit_sha }}
+          EXECUTION_ID: ${{ inputs.execution_id }}
+          ATTEMPT_ID: ${{ inputs.attempt_id }}
+          DISPATCH_NONCE: ${{ inputs.dispatch_nonce }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set +e
+          python -m pytest -q; PYTEST_RC=$?
+          python scripts/secret_scan.py .; SECRET_RC=$?
+          export PYTEST_RC SECRET_RC
+          python - <<'PY'
+          import json, os, subprocess
+          integrated = os.environ.get("INTEGRATED_COMMIT_SHA") or None
+          evidence = {
+              "phase": os.environ["PHASE"], "repository": os.environ["REPOSITORY"],
+              "workflow_source_sha": os.environ["WORKFLOW_SOURCE_SHA"],
+              "subject_sha": os.environ["SUBJECT_SHA"],
+              "checked_out_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "task_spec_hash": os.environ["TASK_SPEC_HASH"],
+              "candidate_commit_sha": os.environ["CANDIDATE_COMMIT_SHA"],
+              "integrated_commit_sha": integrated,
+              "execution_id": os.environ["EXECUTION_ID"],
+              "attempt_id": os.environ["ATTEMPT_ID"],
+              "dispatch_nonce": os.environ["DISPATCH_NONCE"],
+              "pytest_exit_code": int(os.environ["PYTEST_RC"]),
+              "secret_scan_exit_code": int(os.environ["SECRET_RC"]),
+          }
+          with open("governed-ci-evidence.json", "w", encoding="utf-8") as out:
+              json.dump(evidence, out, sort_keys=True, separators=(",", ":"))
+          PY
+          test "$PYTEST_RC" -eq 0 -a "$SECRET_RC" -eq 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: v0-ai-002-ci-evidence
+          path: governed-ci-evidence.json
+          if-no-files-found: error
