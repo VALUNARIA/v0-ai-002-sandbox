@@ -21,3 +21,13 @@ class TaskBoard:
 
     def open_titles(self) -> list[str]:
         return [task.title for task in self._tasks if not task.completed]
+
+    def summary(self) -> dict[str, int | float]:
+        total = len(self._tasks)
+        completed = sum(task.completed for task in self._tasks)
+        return {
+            "total": total,
+            "completed": completed,
+            "open": total - completed,
+            "completion_rate": completed / total if total else 0.0,
+        }
